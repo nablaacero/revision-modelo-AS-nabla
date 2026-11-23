@@ -1,9 +1,9 @@
 {
   "title": "Revisión Nabla",
   "description": "Revisión de choques, pernos y agujeros del modelo IFC (Construcciones Nabla)",
-  "url": "https://TU-USUARIO.github.io/revision-nabla/index.html",
-  "icon": "https://TU-USUARIO.github.io/revision-nabla/icono.svg",
-  "infoUrl": "https://TU-USUARIO.github.io/revision-nabla/index.html",
+  "url": "https://nablaacero.github.io/revision-modelo-AS-nabla/index.html",
+  "icon": "https://nablaacero.github.io/revision-modelo-AS-nabla/icono.svg",
+  "infoUrl": "https://nablaacero.github.io/revision-modelo-AS-nabla/index.html",
   "extensionType": ["3dviewer"],
   "type": "panel",
   "enabled": true

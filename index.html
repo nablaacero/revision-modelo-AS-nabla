@@ -25,8 +25,10 @@
   .ok { color:var(--vd); }
   pre#log { max-height:150px; overflow:auto; background:var(--fd); padding:6px; margin:6px 0 0; font-size:11px; white-space:pre-wrap; }
   .barra { height:4px; background:var(--fd); overflow:hidden; border-radius:2px; margin-top:6px; }
-  .barra i { display:block; height:100%; width:30%; background:var(--az); animation:mov 1.4s linear infinite; }
+  .barra i { display:block; height:100%; width:0; background:var(--az); transition:width .6s; }
+  .barra.indef i { width:30%; animation:mov 1.4s linear infinite; }
   @keyframes mov { from { transform:translateX(-100%);} to { transform:translateX(350%);} }
+  .aviso { background:#fdecea; border:1px solid #f5c2c0; color:#a1161f; padding:8px; border-radius:4px; margin-top:6px; }
   .tabs { display:flex; gap:4px; margin-bottom:6px; flex-wrap:wrap; }
   .tabs button { background:#fff; color:#252a2e; border-color:var(--bd); }
   .tabs button.act { background:var(--az); color:#fff; border-color:var(--az); }
@@ -51,6 +53,7 @@
 
 <section id="s-con">
   <div id="estado-con" class="msg">Conectando con Trimble Connect...</div>
+  <div id="aviso-servidor" class="aviso oculto"></div>
 </section>
 
 <section id="s-lanzar" class="oculto">
@@ -72,9 +75,10 @@
 </section>
 
 <section id="s-avance" class="oculto">
-  <div><b id="av-paso">En cola</b> <span id="av-tiempo" class="msg"></span></div>
-  <div class="barra" id="av-barra"><i></i></div>
-  <pre id="log"></pre>
+  <div><b id="av-paso">Enviando solicitud...</b></div>
+  <div class="barra indef" id="av-barra"><i id="av-i"></i></div>
+  <div id="av-tiempo" class="msg"></div>
+  <div id="av-aviso" class="aviso oculto"></div>
 </section>
 
 <section id="s-res" class="oculto">

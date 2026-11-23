@@ -1,85 +1,156 @@
-/* Extensión "Revisión Nabla" para el visor 3D de Trimble Connect.
-   Habla con Connect (Workspace API) y con el servidor Python de Nabla (config.js). */
+/* Extensión "Revisión Nabla" (v2) para el visor 3D de Trimble Connect.
+   No habla con ningún servidor propio: deja la solicitud en una carpeta del proyecto
+   ("Revisiones Nabla/_cola") y lee de ahí el avance y los resultados que deja la PC de Nabla. */
 (function () {
   "use strict";
-  const SERVIDOR = (window.NABLA_CONFIG && window.NABLA_CONFIG.servidor || "").replace(/\/+$/, "");
-  const AVISO_APAGADO = (window.NABLA_CONFIG && window.NABLA_CONFIG.avisoServidorApagado) ||
-    "Favor solicitar a Oscar Rodas que encienda su equipo y tener (servidor y túnel) conectados.";
-  const $ = (id) => document.getElementById(id);
-  let api = null, token = null, proyecto = null, modelos = [], trabajoId = null, tokenEnviado = null;
-  let resultados = {}, tabActual = null, modeloTrabajo = null, sondeo = null;
-
+  const CFG = window.NABLA_CONFIG || {};
+  const AVISO_APAGADO = CFG.avisoServidorApagado ||
+    "Favor solicitar a Oscar Rodas que encienda su equipo y tener el servidor conectado.";
+  const CARPETA = CFG.carpeta || "Revisiones Nabla";
+  const COLA = "_cola";
+  const MIN_LATIDO = CFG.minutosSinLatido || 3;
+  const API_REGION = {
+    northamerica: "https://app.connect.trimble.com/tc/api/2.0",
+    europe: "https://app21.connect.trimble.com/tc/api/2.0",
+    asia: "https://app31.connect.trimble.com/tc/api/2.0",
+    australia: "https://app32.connect.trimble.com/tc/api/2.0",
+  };
+  const LETRA = { choques: "C", pernos: "P", agujeros: "A" };
+  const NOMBRES = { choques: "Choques", pernos: "Pernos", agujeros: "Agujeros" };
   const COLUMNAS = {
     choques: ["Tipo", "Ensamble A", "Pieza A", "Ensamble B", "Pieza B", "Volumen cm3", "Interferencia mm"],
     pernos: ["Estado", "Perno", "Ø mm", "Ensamble (otro)", "Pieza (otro)", "Interferencia mm"],
     agujeros: ["Estado", "Ensamble", "Pieza", "Perno Ø", "Agujero estandar", "Agujero real"],
   };
-  const GUIDS = {
-    choques: ["GUID A", "GUID B"],
-    pernos: ["GUID perno", "GUID otro"],
-    agujeros: ["GUID pieza"],
-  };
-  const NOMBRES = { choques: "Choques", pernos: "Pernos", agujeros: "Agujeros" };
+  const GUIDS = { choques: ["GUID A", "GUID B"], pernos: ["GUID perno", "GUID otro"], agujeros: ["GUID pieza"] };
 
-  function msg(el, texto, clase) {
-    el.textContent = texto;
-    el.className = "msg" + (clase ? " " + clase : "");
-  }
+  const $ = (id) => document.getElementById(id);
+  let api = null, token = null, proyecto = null, base = null, carpetaId = null, colaId = null;
+  let modelos = [], solId = null, modeloTrabajo = null, resultados = {}, tabActual = null, sondeo = null;
+  let latido = { visto: null, t: 0 };
+
+  function msg(el, texto, clase) { el.textContent = texto; el.className = "msg" + (clase ? " " + clase : ""); }
+  function aviso(el, texto) { el.textContent = texto || ""; el.classList.toggle("oculto", !texto); }
   const guardar = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} };
   const leer = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // ------------------------------------------------------------------ Connect
+  // ------------------------------------------------------------------ API de Connect (token del usuario)
+  async function tc(metodo, ruta, cuerpo, reintento) {
+    const r = await fetch(base + ruta, {
+      method: metodo,
+      headers: Object.assign({ Authorization: "Bearer " + token, Accept: "application/json" },
+        cuerpo ? { "Content-Type": "application/json" } : {}),
+      body: cuerpo ? JSON.stringify(cuerpo) : undefined,
+    });
+    if (r.status === 401 && !reintento) { await espera(2500); return tc(metodo, ruta, cuerpo, true); }
+    let d = null;
+    try { d = await r.json(); } catch (e) {}
+    if (!r.ok) {
+      const e = new Error((d && (d.message || d.error)) || ("HTTP " + r.status));
+      e.status = r.status;
+      throw e;
+    }
+    return d;
+  }
+  async function items(carpeta) {
+    const d = await tc("GET", "/folders/" + carpeta + "/items");
+    const l = Array.isArray(d) ? d : (d && d.items) || [];
+    for (const x of l) x._tipo = String(x.type || x.tp || "").toUpperCase();
+    return l;
+  }
+  async function hija(padre, nombre, crear) {
+    const l = await items(padre);
+    const c = l.find((x) => x._tipo === "FOLDER" && x.name === nombre);
+    if (c) return c.id;
+    if (!crear) return null;
+    return (await tc("POST", "/folders", { name: nombre, parentId: padre })).id;
+  }
+  async function baseDeRegion(loc) {
+    const clave = String(loc || "northamerica").replace(/[\s_]/g, "").toLowerCase();
+    try {
+      const r = await fetch(API_REGION.northamerica + "/regions");
+      for (const x of (await r.json()) || []) {
+        const l = String(x.location || x.serviceRegion || "").toLowerCase();
+        const a = x["tc-api"] || (x.origin ? x.origin.replace(/\/+$/, "") + "/tc/api/2.0" : "");
+        if (l && a) API_REGION[l] = a.replace(/\/+$/, "");
+      }
+    } catch (e) {}
+    return API_REGION[clave] || API_REGION.northamerica;
+  }
+
+  // ------------------------------------------------------------------ inicio
   function alEvento(evento, args) {
     if (evento === "extension.accessToken") {
-      token = args && args.data;
-      if (token && proyecto) listo();
-      enviarToken();
+      const nuevo = args && args.data;
+      const primero = !token;
+      token = nuevo;
+      if (primero && token && proyecto) listo();
     }
   }
 
   async function iniciar() {
-    if (!SERVIDOR || SERVIDOR.includes("TU-")) {
-      msg($("estado-con"), "Falta configurar la dirección del servidor en config.js", "err");
-      return;
-    }
     try {
       api = await TrimbleConnectWorkspace.connect(window.parent, alEvento, 30000);
     } catch (e) {
       msg($("estado-con"), "Esta página debe abrirse como extensión dentro de Trimble Connect.", "err");
       return;
     }
-    try {
-      proyecto = await (api.project.getCurrentProject ? api.project.getCurrentProject() : api.project.getProject());
-    } catch (e) {
-      proyecto = await api.project.getProject();
-    }
+    try { proyecto = await api.project.getCurrentProject(); } catch (e) { proyecto = await api.project.getProject(); }
+    base = await baseDeRegion(proyecto.location);
     const r = await api.extension.requestPermission("accesstoken");
-    if (r && r !== "pending" && r !== "denied" && r !== "granted") token = r;
     if (r === "denied") {
       msg($("estado-con"), "No se dio permiso de acceso. Actívalo en la configuración de la extensión.", "err");
       return;
     }
+    if (r && r !== "pending" && r !== "granted") token = r;
     if (token) listo();
     else msg($("estado-con"), "Acepta el permiso de acceso que pide Trimble Connect...");
   }
 
   async function listo() {
     if (!$("s-lanzar").classList.contains("oculto")) return;
-    let salud = null;
     try {
-      salud = await servidor("GET", "/salud");
-    } catch (e) {}
-    if (!salud || !salud.ok) {
-      msg($("estado-con"), "⚠ " + AVISO_APAGADO + " (se vuelve a intentar cada 15 s)", "err");
-      setTimeout(() => { $("s-lanzar").classList.add("oculto"); listo(); }, 15000);
+      const p = await tc("GET", "/projects/" + proyecto.id);
+      carpetaId = await hija(p.rootId, CARPETA, true);
+      colaId = await hija(carpetaId, COLA, true);
+    } catch (e) {
+      msg($("estado-con"), "No se pudo preparar la carpeta \"" + CARPETA + "\" en la raíz del proyecto (" + e.message +
+        "). Pide a un administrador del proyecto que abra este panel una vez.", "err");
       return;
     }
-    msg($("estado-con"), "Proyecto: " + (proyecto.name || proyecto.id) + " · servidor conectado" +
-      (salud.trabajando || salud.en_cola ? " (ocupado: " + (salud.trabajando + salud.en_cola) + " en proceso)" : ""), "ok");
+    msg($("estado-con"), "Proyecto: " + (proyecto.name || proyecto.id), "ok");
     $("s-lanzar").classList.remove("oculto");
+    await revisarLatido(true);
     await leerModelos();
-    const pend = leer("nabla_trabajo");
-    if (pend) { trabajoId = pend; seguir(); }
+    const pend = leer("nabla_sol_" + proyecto.id);
+    if (pend) { solId = pend; modeloTrabajo = leer("nabla_modelo_" + proyecto.id); seguir(); }
+  }
+
+  // ------------------------------------------------------------------ ¿está encendida la PC?
+  async function revisarLatido(forzar) {
+    if (!forzar && Date.now() - latido.t < 30000) return latido.ok;
+    latido.t = Date.now();
+    let ultimo = null;
+    try {
+      for (const x of await items(colaId)) {
+        const m = /^servidor_activo__(\d{8})T(\d{6})Z/.exec(x.name || "");
+        if (x._tipo === "FILE" && m) {
+          const d = m[1], h = m[2];
+          const t = Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8), +h.slice(0, 2), +h.slice(2, 4), +h.slice(4, 6));
+          if (!ultimo || t > ultimo) ultimo = t;
+        }
+      }
+    } catch (e) { return latido.ok; }
+    latido.ok = ultimo && Date.now() - ultimo < MIN_LATIDO * 60000;
+    let txt = "";
+    if (!latido.ok) {
+      txt = "⚠ " + AVISO_APAGADO;
+      if (!ultimo) txt += " (Si el panel se acaba de usar por primera vez en este proyecto, el servidor puede tardar hasta 3 min en detectarlo.)";
+      else txt += " (Última señal del servidor: " + new Date(ultimo).toLocaleString() + ")";
+    }
+    aviso($("aviso-servidor"), txt);
+    return latido.ok;
   }
 
   async function leerModelos() {
@@ -94,8 +165,7 @@
       const fe = (f && f.file) || {};
       const nombre = fe.name || (f && f.name) || m.name || "";
       if (!/\.ifc$/i.test(nombre)) continue;
-      modelos.push({ modelId: m.id, fileId: fe.id || (f && f.id), parentId: fe.parentId || null,
-                     nombre: nombre, mb: fe.size ? Math.round(fe.size / 1048576) : null });
+      modelos.push({ modelId: m.id, fileId: fe.id || (f && f.id), nombre: nombre, mb: fe.size ? Math.round(fe.size / 1048576) : null });
     }
     for (const [i, m] of modelos.entries()) {
       const o = document.createElement("option");
@@ -108,70 +178,40 @@
       o.textContent = "Abre un modelo IFC en el visor y presiona ↻";
       sel.appendChild(o);
     }
-    $("b-revisar").disabled = $("b-diag").disabled = !modelos.length;
+    $("b-revisar").disabled = !modelos.length;
   }
 
-  // ------------------------------------------------------------------ servidor
-  async function servidor(metodo, ruta, cuerpo) {
-    const r = await fetch(SERVIDOR + ruta, {
-      method: metodo,
-      headers: Object.assign({ "ngrok-skip-browser-warning": "1" },
-        token ? { Authorization: "Bearer " + token } : {},
-        cuerpo ? { "Content-Type": "application/json" } : {}),
-      body: cuerpo ? JSON.stringify(cuerpo) : undefined,
-    });
-    let d = {};
-    try { d = await r.json(); } catch (e) {}
-    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
-    return d;
-  }
-
-  function pedido(m) {
-    return { projectId: proyecto.id, location: proyecto.location, fileId: m.fileId,
-             parentId: m.parentId, fileName: m.nombre };
-  }
-
+  // ------------------------------------------------------------------ solicitud
   async function revisar() {
     const m = modelos[+$("modelo").value];
     const revs = ["choques", "pernos", "agujeros"].filter((r) => $("r-" + r).checked);
     if (!m) return;
     if (!revs.length) { msg($("msg-lanzar"), "Marca al menos una revisión.", "err"); return; }
     $("b-revisar").disabled = true;
-    msg($("msg-lanzar"), "Enviando...");
+    msg($("msg-lanzar"), "Enviando solicitud...");
+    const ts = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+    const nombre = "SOL_" + ts + "_" + revs.map((r) => LETRA[r]).join("") + "_" + m.fileId;
     try {
-      const t = await servidor("POST", "/trabajos", Object.assign(pedido(m), { revisiones: revs }));
-      trabajoId = t.id;
-      tokenEnviado = token;
-      guardar("nabla_trabajo", t.id);
-      guardar("nabla_modelo", m.modelId);
+      const f = await tc("POST", "/folders", { name: nombre, parentId: colaId });
+      solId = f.id;
+      modeloTrabajo = m.modelId;
+      guardar("nabla_sol_" + proyecto.id, solId);
+      guardar("nabla_modelo_" + proyecto.id, m.modelId);
       msg($("msg-lanzar"), "");
+      $("s-res").classList.add("oculto");
       seguir();
     } catch (e) {
-      msg($("msg-lanzar"), "No se pudo iniciar: " + e.message, "err");
+      msg($("msg-lanzar"), "No se pudo enviar la solicitud: " + e.message, "err");
       $("b-revisar").disabled = false;
     }
   }
 
-  async function diagnosticar() {
-    const m = modelos[+$("modelo").value];
-    msg($("msg-lanzar"), "Probando conexión (usuario, proyecto, descarga y subida de prueba)...");
-    try {
-      const d = await servidor("POST", "/diagnostico", m ? pedido(m) : { projectId: proyecto.id, location: proyecto.location });
-      const txt = d.pasos.map((p) => (p.ok ? "✔ " : "✘ ") + p.paso + ": " + p.detalle).join("\n");
-      $("msg-lanzar").innerHTML = "";
-      const pre = document.createElement("pre");
-      pre.style.whiteSpace = "pre-wrap";
-      pre.style.fontSize = "11px";
-      pre.textContent = txt;
-      $("msg-lanzar").appendChild(pre);
-    } catch (e) {
-      msg($("msg-lanzar"), "Falló el diagnóstico: " + e.message, "err");
-    }
-  }
-
-  async function enviarToken() {
-    if (!trabajoId || !token || token === tokenEnviado) return;
-    try { await servidor("POST", "/trabajos/" + trabajoId + "/token", {}); tokenEnviado = token; } catch (e) {}
+  function formatoEta(seg) {
+    if (!seg) return "";
+    const fin = new Date(Date.now() + seg * 1000);
+    const min = Math.max(1, Math.round(seg / 60));
+    return "Tiempo restante ≈ " + (min >= 60 ? Math.floor(min / 60) + " h " + (min % 60) + " min" : min + " min") +
+      " (termina aprox. " + fin.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ")";
   }
 
   function seguir() {
@@ -179,49 +219,74 @@
     $("b-revisar").disabled = true;
     clearTimeout(sondeo);
     const paso = async () => {
-      let t;
-      try {
-        t = await servidor("GET", "/trabajos/" + trabajoId);
-      } catch (e) {
-        if (/no encontrado/i.test(e.message)) { fin(); $("s-avance").classList.add("oculto"); return; }
-        $("av-paso").className = "err";
-        $("av-paso").textContent = "⚠ Se perdió la conexión con el servidor. " + AVISO_APAGADO;
-        sondeo = setTimeout(paso, 8000);
+      let l;
+      try { l = await items(solId); } catch (e) {
+        if (e.status === 404) { terminar(); $("s-avance").classList.add("oculto"); return; }
+        sondeo = setTimeout(paso, 10000);
         return;
       }
-      $("av-paso").className = "";
-      $("av-paso").textContent = t.estado === "en cola" ? "En cola" + (t.en_cola > 1 ? " (posición " + t.en_cola + ")" : "")
-        : t.estado === "error" ? "Error" : t.paso;
-      $("av-tiempo").textContent = t.archivo + " · " + Math.floor(t.segundos / 60) + " min " + (t.segundos % 60) + " s";
-      const log = $("log");
-      log.textContent = (t.log || []).join("\n");
-      log.scrollTop = log.scrollHeight;
-      if (t.estado === "listo") {
-        fin();
-        mostrarResultados(t);
-      } else if (t.estado === "error") {
-        fin();
-        $("av-paso").className = "err";
-        $("av-paso").textContent = "Error: " + (t.error || "");
+      const est = l.find((x) => x._tipo === "FILE" && /^estado__/.test(x.name || ""));
+      const p = est ? est.name.replace(/\.txt$/, "").split("__") : null;
+      const estado = p ? p[1] : "enviada", pct = p ? +p[2] : 0, eta = p ? +p[3] : 0, txt = p ? p.slice(4).join("__") : "";
+      const encendido = await revisarLatido(false);
+      $("av-paso").className = estado === "error" ? "err" : "";
+      $("av-barra").classList.toggle("indef", estado === "enviada" || estado === "cola");
+      $("av-i").style.width = (estado === "listo" ? 100 : pct) + "%";
+      if (estado === "enviada") {
+        $("av-paso").textContent = "Solicitud enviada; esperando al servidor...";
+        $("av-tiempo").textContent = "";
+      } else if (estado === "cola") {
+        $("av-paso").textContent = txt || "En cola";
+        $("av-tiempo").textContent = "";
+      } else if (estado === "trabajando") {
+        $("av-paso").textContent = (txt || "Trabajando") + " · " + pct + " %";
+        $("av-tiempo").textContent = formatoEta(eta);
+      } else if (estado === "listo") {
+        $("av-paso").textContent = "Terminado · " + txt;
+        $("av-tiempo").textContent = "";
+      } else if (estado === "error") {
+        $("av-paso").textContent = txt || "Error";
+        $("av-tiempo").textContent = "El detalle está en registro.txt dentro de la carpeta de la solicitud.";
+      }
+      aviso($("av-aviso"), !encendido && estado !== "listo" && estado !== "error"
+        ? "⚠ El servidor no está respondiendo. " + AVISO_APAGADO : "");
+      if (estado === "listo") {
+        terminar();
+        const rj = l.find((x) => x._tipo === "FILE" && x.name === "resultados.json");
+        if (rj) cargarResultados(rj.id);
+        else sondeo = setTimeout(paso, 5000);
+      } else if (estado === "error") {
+        terminar();
       } else {
-        enviarToken();
-        sondeo = setTimeout(paso, 4000);
+        sondeo = setTimeout(paso, 8000);
       }
     };
     paso();
   }
 
-  function fin() {
-    $("av-barra").classList.add("oculto");
+  function terminar() {
     $("b-revisar").disabled = false;
-    guardar("nabla_trabajo", null);
+    guardar("nabla_sol_" + proyecto.id, null);
+  }
+
+  async function cargarResultados(fileId) {
+    try {
+      const u = await tc("GET", "/files/fs/" + fileId + "/downloadurl");
+      const r = await fetch(u.url);
+      const d = await r.json();
+      mostrarResultados(d);
+    } catch (e) {
+      $("s-res").classList.remove("oculto");
+      $("tabs").innerHTML = "";
+      $("thead").innerHTML = $("tbody").innerHTML = "";
+      msg($("res-info"), "La revisión terminó, pero no se pudo cargar la tabla aquí (" + e.message +
+        "). Los CSV e IFC coloreados están en la carpeta \"" + CARPETA + "\" junto al modelo.", "err");
+    }
   }
 
   // ------------------------------------------------------------------ resultados
-  function mostrarResultados(t) {
-    resultados = t.resultados || {};
-    const mid = leer("nabla_modelo");
-    modeloTrabajo = mid || (modelos[+$("modelo").value] || {}).modelId;
+  function mostrarResultados(d) {
+    resultados = d.resultados || {};
     const tabs = $("tabs");
     tabs.innerHTML = "";
     const claves = Object.keys(resultados);
@@ -233,8 +298,9 @@
       b.dataset.k = k;
       tabs.appendChild(b);
     }
-    $("res-sub").textContent = t.subidos && t.subidos.length
-      ? "Guardado en Connect, carpeta \"Revisiones Nabla\": " + t.subidos.join(", ") : "";
+    $("res-sub").textContent = (d.subidos && d.subidos.length
+      ? "Guardado en Connect, carpeta \"" + CARPETA + "\" junto al modelo: " + d.subidos.join(", ") : "") +
+      (d.segundos ? " · tardó " + Math.round(d.segundos / 60) + " min" : "");
     $("s-res").classList.remove("oculto");
     if (claves.length) verTab(claves[0]);
   }
@@ -283,8 +349,9 @@
       frag.appendChild(tr);
     }
     tb.appendChild(frag);
+    $("res-info").className = "msg";
     $("res-info").textContent = filas.length + " filas" + (filas.length > 1500 ? " (se muestran 1500; usa el filtro)" : "") +
-      (r.mostradas < r.con_problema ? " · el servidor envió " + r.mostradas + " de " + r.con_problema + "; el CSV completo está en Connect" : "") +
+      (r.mostradas < r.con_problema ? " · se enviaron " + r.mostradas + " de " + r.con_problema + "; el CSV completo está en Connect" : "") +
       " · clic en una fila para ir a la pieza";
   }
 
@@ -317,8 +384,7 @@
     try {
       await api.viewer.setObjectState(undefined, { color: { r: 170, g: 170, b: 170, a: 90 } });
       const ids = await runtimeIds([...new Set(guids)]);
-      await api.viewer.setObjectState({ modelObjectIds: [{ modelId: modeloTrabajo, objectRuntimeIds: ids }] },
-        { color: "#DA212C" });
+      await api.viewer.setObjectState({ modelObjectIds: [{ modelId: modeloTrabajo, objectRuntimeIds: ids }] }, { color: "#DA212C" });
       msg($("res-info"), ids.length + " piezas en rojo; el resto en gris transparente.");
     } catch (e) {
       msg($("res-info"), "No se pudo colorear: " + e.message, "err");
@@ -333,6 +399,24 @@
     for (const x of $("tbody").querySelectorAll("tr.sel")) x.classList.remove("sel");
   }
 
+  async function diagnosticar() {
+    const pasos = [];
+    const p = async (n, f) => { try { pasos.push("✔ " + n + ": " + ((await f()) || "OK")); return true; } catch (e) { pasos.push("✘ " + n + ": " + e.message); return false; } };
+    msg($("msg-lanzar"), "Probando...");
+    await p("API de la región", async () => (proyecto.location || "?") + " → " + base);
+    await p("Usuario", async () => { const u = await tc("GET", "/users/me"); return u.email; });
+    await p("Carpeta buzón", async () => CARPETA + "/" + COLA + (colaId ? " lista" : " no encontrada"));
+    await p("Servidor de Nabla", async () => { if (!(await revisarLatido(true))) throw new Error("sin señal reciente"); return "activo"; });
+    const m = modelos[+$("modelo").value];
+    if (m) await p("Archivo del modelo", async () => { const f = await tc("GET", "/files/" + m.fileId); return f.name; });
+    $("msg-lanzar").innerHTML = "";
+    const pre = document.createElement("pre");
+    pre.style.whiteSpace = "pre-wrap";
+    pre.style.fontSize = "11px";
+    pre.textContent = pasos.join("\n");
+    $("msg-lanzar").appendChild(pre);
+  }
+
   $("b-revisar").onclick = revisar;
   $("b-diag").onclick = diagnosticar;
   $("b-recargar").onclick = leerModelos;
@@ -340,5 +424,6 @@
   $("b-reset").onclick = limpiar;
   let tf;
   $("filtro").oninput = () => { clearTimeout(tf); tf = setTimeout(pintarTabla, 250); };
+  setInterval(() => { if (colaId && $("s-avance").classList.contains("oculto")) revisarLatido(false); }, 60000);
   iniciar();
 })();

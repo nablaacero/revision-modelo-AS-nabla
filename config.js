@@ -1,7 +1,9 @@
-// Dirección pública del servidor de Nabla (el túnel que apunta a la PC del servidor).
-// Ejemplo con ngrok: "https://revision-nabla.ngrok-free.app"
+// Configuración del panel "Revisión Nabla"
 window.NABLA_CONFIG = {
-  servidor: "https://TU-DOMINIO.ngrok-free.app",
-  // Aviso que ven los usuarios cuando la PC del servidor no responde
-  avisoServidorApagado: "Favor solicitar a Oscar Rodas que encienda su equipo y tener (servidor y túnel) conectados."
+  // Aviso que ven los usuarios cuando la PC del servidor no está atendiendo
+  avisoServidorApagado: "Favor solicitar a Oscar Rodas que encienda su equipo y tener el servidor conectado.",
+  // Carpeta (en la raíz del proyecto) que sirve de buzón. Debe coincidir con config.json del servidor.
+  carpeta: "Revisiones Nabla",
+  // Minutos sin "latido" del servidor para considerarlo apagado
+  minutosSinLatido: 3
 };
