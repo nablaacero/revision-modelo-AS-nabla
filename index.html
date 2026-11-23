@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Revisión Nabla</title>
+<style>
+  :root { --az:#0063a3; --az2:#004f83; --gr:#6a6e79; --bd:#d0d0d7; --fd:#f3f3f7; --rj:#da212c; --nj:#e49325; --vd:#1e8a44; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:13px/1.45 "Segoe UI", Roboto, Arial, sans-serif; color:#252a2e; background:#fff; }
+  header { padding:10px 12px; border-bottom:1px solid var(--bd); }
+  header h1 { margin:0; font-size:15px; font-weight:600; }
+  header .sub { color:var(--gr); font-size:12px; }
+  section { padding:10px 12px; border-bottom:1px solid var(--bd); }
+  label.bl { display:block; font-weight:600; margin:0 0 4px; }
+  select, input[type=text] { width:100%; padding:6px; border:1px solid var(--bd); border-radius:4px; font:inherit; }
+  .fila { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .chk { display:flex; gap:4px; align-items:center; margin-right:10px; }
+  button { font:inherit; padding:6px 12px; border-radius:4px; border:1px solid var(--az); background:var(--az); color:#fff; cursor:pointer; }
+  button:hover { background:var(--az2); }
+  button.sec { background:#fff; color:var(--az); }
+  button:disabled { opacity:.5; cursor:default; }
+  .msg { margin-top:6px; color:var(--gr); }
+  .err { color:var(--rj); }
+  .ok { color:var(--vd); }
+  pre#log { max-height:150px; overflow:auto; background:var(--fd); padding:6px; margin:6px 0 0; font-size:11px; white-space:pre-wrap; }
+  .barra { height:4px; background:var(--fd); overflow:hidden; border-radius:2px; margin-top:6px; }
+  .barra i { display:block; height:100%; width:30%; background:var(--az); animation:mov 1.4s linear infinite; }
+  @keyframes mov { from { transform:translateX(-100%);} to { transform:translateX(350%);} }
+  .tabs { display:flex; gap:4px; margin-bottom:6px; flex-wrap:wrap; }
+  .tabs button { background:#fff; color:#252a2e; border-color:var(--bd); }
+  .tabs button.act { background:var(--az); color:#fff; border-color:var(--az); }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { text-align:left; padding:4px 5px; border-bottom:1px solid #eee; vertical-align:top; }
+  th { position:sticky; top:0; background:#fff; border-bottom:1px solid var(--bd); }
+  tbody tr { cursor:pointer; }
+  tbody tr:hover { background:#eef5fb; }
+  tbody tr.sel { background:#d9ebf9; }
+  .tabla { max-height:55vh; overflow:auto; border:1px solid var(--bd); border-radius:4px; }
+  .et { display:inline-block; padding:0 5px; border-radius:3px; font-size:11px; color:#fff; background:var(--rj); white-space:nowrap; }
+  .et.n { background:var(--nj); }
+  details summary { cursor:pointer; color:var(--az); }
+  .oculto { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Revisión Nabla</h1>
+  <div class="sub">Choques, pernos y agujeros del modelo IFC</div>
+</header>
+
+<section id="s-con">
+  <div id="estado-con" class="msg">Conectando con Trimble Connect...</div>
+</section>
+
+<section id="s-lanzar" class="oculto">
+  <label class="bl" for="modelo">Modelo IFC (abierto en el visor)</label>
+  <div class="fila">
+    <select id="modelo" style="flex:1"></select>
+    <button class="sec" id="b-recargar" title="Volver a leer los modelos abiertos">↻</button>
+  </div>
+  <div class="fila" style="margin-top:8px">
+    <span class="chk"><input type="checkbox" id="r-choques" checked><label for="r-choques">Choques</label></span>
+    <span class="chk"><input type="checkbox" id="r-pernos" checked><label for="r-pernos">Pernos</label></span>
+    <span class="chk"><input type="checkbox" id="r-agujeros" checked><label for="r-agujeros">Agujeros</label></span>
+  </div>
+  <div class="fila" style="margin-top:8px">
+    <button id="b-revisar">Revisar modelo</button>
+    <button class="sec" id="b-diag">Probar conexión</button>
+  </div>
+  <div id="msg-lanzar" class="msg"></div>
+</section>
+
+<section id="s-avance" class="oculto">
+  <div><b id="av-paso">En cola</b> <span id="av-tiempo" class="msg"></span></div>
+  <div class="barra" id="av-barra"><i></i></div>
+  <pre id="log"></pre>
+</section>
+
+<section id="s-res" class="oculto">
+  <div class="tabs" id="tabs"></div>
+  <div class="fila" style="margin-bottom:6px">
+    <input type="text" id="filtro" placeholder="Filtrar (ensamble, pieza, estado...)" style="flex:1">
+    <button class="sec" id="b-colorear" title="Pinta en rojo todas las piezas de esta lista">Colorear todo</button>
+    <button class="sec" id="b-reset" title="Quita colores y selección">Limpiar</button>
+  </div>
+  <div id="res-info" class="msg" style="margin:0 0 6px"></div>
+  <div class="tabla"><table><thead id="thead"></thead><tbody id="tbody"></tbody></table></div>
+  <div id="res-sub" class="msg"></div>
+</section>
+
+<script src="config.js"></script>
+<script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
+<script>
+  if (!window.TrimbleConnectWorkspace) {
+    document.write('<script src="https://unpkg.com/trimble-connect-workspace-api@0.3.40/dist/iife/trimbleconnect.workspace.api.js"><\/script>');
+  }
+</script>
+<script src="app.js"></script>
+</body>
+</html>
