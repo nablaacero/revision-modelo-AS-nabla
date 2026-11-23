@@ -157,15 +157,27 @@
     const sel = $("modelo");
     sel.innerHTML = "";
     modelos = [];
-    let lista = [];
+    let lista = [], vistos = [];
     try { lista = await api.viewer.getModels("loaded"); } catch (e) {}
+    if (!lista || !lista.length) {
+      try { lista = (await api.viewer.getModels()).filter((m) => String(m.state || "").toLowerCase() === "loaded"); } catch (e) {}
+    }
     for (const m of lista || []) {
-      let f = null;
+      let fe = {}, f = null;
       try { f = await api.viewer.getLoadedModel(m.id); } catch (e) {}
-      const fe = (f && f.file) || {};
-      const nombre = fe.name || (f && f.name) || m.name || "";
-      if (!/\.ifc$/i.test(nombre)) continue;
-      modelos.push({ modelId: m.id, fileId: fe.id || (f && f.id), nombre: nombre, mb: fe.size ? Math.round(fe.size / 1048576) : null });
+      if (f) fe = Object.assign({}, f.file || {}, { name: (f.file && f.file.name) || f.name, id: (f.file && f.file.id) || f.id });
+      // si el visor no da el archivo, se pregunta a Connect con los identificadores del modelo
+      for (const cand of [fe.id, m.id, m.versionId]) {
+        if (fe.name && fe.id) break;
+        if (!cand) continue;
+        try { const x = await tc("GET", "/files/" + cand); fe = Object.assign({}, x, { id: x.id || cand }); } catch (e) {}
+      }
+      const nombre = fe.name || m.name || "";
+      const esIfc = /\.ifc$/i.test(nombre) || /ifc/i.test(String(m.type || ""));
+      vistos.push(nombre + " [" + (m.type || "?") + "]");
+      if (!esIfc || !fe.id) continue;
+      modelos.push({ modelId: m.id, fileId: fe.id, nombre: /\.ifc$/i.test(nombre) ? nombre : nombre + ".ifc",
+                     mb: fe.size ? Math.round(fe.size / 1048576) : null });
     }
     for (const [i, m] of modelos.entries()) {
       const o = document.createElement("option");
@@ -175,8 +187,9 @@
     }
     if (!modelos.length) {
       const o = document.createElement("option");
-      o.textContent = "Abre un modelo IFC en el visor y presiona ↻";
+      o.textContent = vistos.length ? "Ningún IFC entre los modelos abiertos" : "Abre un modelo IFC en el visor y presiona ↻";
       sel.appendChild(o);
+      if (vistos.length) msg($("msg-lanzar"), "Modelos abiertos en el visor: " + vistos.join(", "), "err");
     }
     $("b-revisar").disabled = !modelos.length;
   }
