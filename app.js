@@ -3,6 +3,7 @@
    ("Revisiones Nabla/_cola") y lee de ahí el avance y los resultados que deja la PC de Nabla. */
 (function () {
   "use strict";
+  const VERSION = "2.2 (23-nov-2026)";
   const CFG = window.NABLA_CONFIG || {};
   const AVISO_APAGADO = CFG.avisoServidorApagado ||
     "Favor solicitar a Oscar Rodas que encienda su equipo y tener el servidor conectado.";
@@ -90,6 +91,7 @@
   }
 
   async function iniciar() {
+    $("version").textContent = "versión " + VERSION;
     try {
       api = await TrimbleConnectWorkspace.connect(window.parent, alEvento, 30000);
     } catch (e) {
@@ -157,10 +159,11 @@
     const sel = $("modelo");
     sel.innerHTML = "";
     modelos = [];
-    let lista = [], vistos = [];
-    try { lista = await api.viewer.getModels("loaded"); } catch (e) {}
+    let lista = [], vistos = [], todos = [], err = "";
+    try { lista = await api.viewer.getModels("loaded"); } catch (e) { err = e.message || String(e); }
     if (!lista || !lista.length) {
-      try { lista = (await api.viewer.getModels()).filter((m) => String(m.state || "").toLowerCase() === "loaded"); } catch (e) {}
+      try { todos = await api.viewer.getModels(); } catch (e) { err = err || e.message || String(e); }
+      lista = (todos || []).filter((m) => String(m.state || "").toLowerCase() === "loaded");
     }
     for (const m of lista || []) {
       let fe = {}, f = null;
@@ -189,7 +192,10 @@
       const o = document.createElement("option");
       o.textContent = vistos.length ? "Ningún IFC entre los modelos abiertos" : "Abre un modelo IFC en el visor y presiona ↻";
       sel.appendChild(o);
-      if (vistos.length) msg($("msg-lanzar"), "Modelos abiertos en el visor: " + vistos.join(", "), "err");
+      msg($("msg-lanzar"), vistos.length ? "Modelos abiertos en el visor: " + vistos.join(", ")
+        : "El visor no reporta modelos cargados (" + (todos || []).length + " en el árbol" +
+          (todos && todos.length ? ": " + todos.slice(0, 5).map((m) => (m.name || m.id) + " [" + (m.state || "?") + "]").join(", ") : "") +
+          (err ? "; error: " + err : "") + ")", "err");
     }
     $("b-revisar").disabled = !modelos.length;
   }
