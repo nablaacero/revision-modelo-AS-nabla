@@ -3,13 +3,15 @@
    ("Revisiones Nabla/_cola") y lee de ahí el avance y los resultados que deja la PC de Nabla. */
 (function () {
   "use strict";
-  const VERSION = "2.2 (23-nov-2026)";
+  const VERSION = "2.3 (23-nov-2026)";
   const CFG = window.NABLA_CONFIG || {};
   const AVISO_APAGADO = CFG.avisoServidorApagado ||
     "Favor solicitar a Oscar Rodas que encienda su equipo y tener el servidor conectado.";
   const CARPETA = CFG.carpeta || "Revisiones Nabla";
   const COLA = "_cola";
   const MIN_LATIDO = CFG.minutosSinLatido || 3;
+  const GRUPO = (CFG.grupoPermitido || "").trim();
+  const SIEMPRE = (CFG.siempreAcceso || []).map((x) => String(x).toLowerCase());
   const API_REGION = {
     northamerica: "https://app.connect.trimble.com/tc/api/2.0",
     europe: "https://app21.connect.trimble.com/tc/api/2.0",
@@ -110,8 +112,54 @@
     else msg($("estado-con"), "Acepta el permiso de acceso que pide Trimble Connect...");
   }
 
+  // ------------------------------------------------------------------ acceso por grupo
+  function lista(d) { return Array.isArray(d) ? d : (d && (d.items || d.users || d.data)) || []; }
+  function correo(u) { return String(u.email || (u.user && u.user.email) || "").toLowerCase(); }
+
+  async function tieneAcceso() {
+    if (!GRUPO) return { ok: true };
+    const yo = await tc("GET", "/users/me");
+    const mio = String(yo.email || "").toLowerCase();
+    if (SIEMPRE.includes(mio)) return { ok: true };
+    let grupos;
+    try { grupos = lista(await tc("GET", "/groups?projectId=" + encodeURIComponent(proyecto.id))); }
+    catch (e) { return { ok: false, motivo: "No se pudo verificar el grupo " + GRUPO + " (" + e.message + ")." }; }
+    const g = grupos.find((x) => String(x.name || "").trim().toLowerCase() === GRUPO.toLowerCase());
+    if (!g) return { ok: false, motivo: "Este proyecto no tiene un grupo llamado " + GRUPO + "." };
+    let miembros;
+    try { miembros = lista(await tc("GET", "/groups/" + g.id + "/users")); }
+    catch (e) { return { ok: false, motivo: "No se pudo verificar el grupo " + GRUPO + " (" + e.message + ")." }; }
+    const ids = [yo.id, yo.tiduuid].filter(Boolean);
+    const esta = miembros.some((u) => correo(u) === mio || ids.includes(u.id) || ids.includes(u.tiduuid) ||
+                                      (u.user && ids.includes(u.user.id)));
+    return esta ? { ok: true } : { ok: false, motivo: "" };
+  }
+
+  function bloquear(motivo) {
+    for (const id of ["s-lanzar", "s-avance", "s-res"]) $(id).classList.add("oculto");
+    aviso($("aviso-servidor"), "");
+    $("estado-con").className = "msg";
+    $("estado-con").innerHTML = "";
+    const d = document.createElement("div");
+    d.style.cssText = "padding:24px 4px;text-align:center;color:#6a6e79";
+    const t = document.createElement("div");
+    t.style.cssText = "font-size:28px;margin-bottom:8px";
+    t.textContent = "🔒";
+    const m = document.createElement("div");
+    m.style.cssText = "font-weight:600;color:#252a2e;margin-bottom:6px";
+    m.textContent = "Acceso solo para el grupo " + GRUPO;
+    const n = document.createElement("div");
+    n.textContent = motivo || "No perteneces al grupo " + GRUPO + " de este proyecto. Si necesitas una revisión, solicítala a un miembro de ese grupo.";
+    d.append(t, m, n);
+    $("estado-con").appendChild(d);
+  }
+
   async function listo() {
     if (!$("s-lanzar").classList.contains("oculto")) return;
+    msg($("estado-con"), "Verificando acceso...");
+    let acc;
+    try { acc = await tieneAcceso(); } catch (e) { acc = { ok: false, motivo: "No se pudo verificar el acceso (" + e.message + ")." }; }
+    if (!acc.ok) { bloquear(acc.motivo); return; }
     try {
       const p = await tc("GET", "/projects/" + proyecto.id);
       carpetaId = await hija(p.rootId, CARPETA, true);
